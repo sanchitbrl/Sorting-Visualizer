@@ -1,22 +1,4 @@
-﻿/*
- * DAY 2 — Bubble Sort + Keyboard Controls
- * ────────────────────────────────────────
- * Commit message: "feat: add bubble sort step engine, SPACE/R controls, compare/swap colors"
- *
- * What's new vs Day 1:
- *   - SortState struct holds bars + colorMap + step list
- *   - Bubble sort pre-generates all steps as lambdas (step-engine pattern)
- *   - SPACE  → start / pause
- *   - R      → shuffle and reset
- *   - UP/DOWN → speed (1-10)
- *   - Bars turn yellow (comparing) or red (swapping), green when sorted
- *
- * Compile:
- *   g++ -std=c++17 day2_bubble_sort.cpp -o day2 \
- *       $(pkg-config --libs --cflags raylib)
- */
-
-#include "raylib.h"
+﻿#include "raylib.h"
 #include <vector>
 #include <numeric>
 #include <algorithm>
