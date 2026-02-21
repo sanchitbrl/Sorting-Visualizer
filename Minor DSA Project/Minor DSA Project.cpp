@@ -1,21 +1,4 @@
-﻿/*
- * DAY 3 — All 6 Algorithms + Algorithm Selector
- * ───────────────────────────────────────────────
- * Commit message: "feat: add selection/insertion/merge/quick/heap sort + key-based algo switcher"
- *
- * What's new vs Day 2:
- *   - All 6 algorithms implemented: Bubble, Selection, Insertion, Merge, Quick, Heap
- *   - Keys 1-6 switch algorithm (and auto-shuffle)
- *   - Algorithm name shown in panel
- *   - Complexity label shown per algorithm
- *   - Step engine abstracted into buildSteps() dispatcher
- *
- * Compile:
- *   g++ -std=c++17 day3_all_algorithms.cpp -o day3 \
- *       $(pkg-config --libs --cflags raylib)
- */
-
-#include "raylib.h"
+﻿#include "raylib.h"
 #include <vector>
 #include <numeric>
 #include <algorithm>
