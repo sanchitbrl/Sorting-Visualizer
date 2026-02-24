@@ -1,32 +1,8 @@
-﻿/*
- * ╔══════════════════════════════════════════════════════════════╗
- * ║  DAY 5 — Full Polished UI                                   ║
- * ║  3-Row Panel · Stat Cards · Progress Bar · Status Pill      ║
- * ╚══════════════════════════════════════════════════════════════╝
- *
- * Commit: "feat: redesign UI with 3-row panel, stat cards,
- *          progress bar, status pill, and legend overlay"
- *
- * What's new vs Day 4:
- *   - Panel split into three distinct rows:
- *       1. Header bar  — title + complexity badge + status pill
- *       2. Button row  — 6 centered algorithm buttons
- *       3. Stats row   — Comparisons / Swaps / Steps / Elements cards
- *   - Progress bar showing % of steps completed
- *   - Status pill changes colour (yellow=running, green=sorted, grey=paused)
- *   - Complexity badge shown in header  (O(n²) / O(n log n))
- *   - Legend overlay in the bar area
- *   - drawCard() helper for stat tiles
- *   - MSAA 4x anti-aliasing + HiDPI window flags
- *
- * Compile:
- *   g++ -std=c++17 day5_polished_ui.cpp -o day5 \
- *       $(pkg-config --libs --cflags raylib)
- *
- * Controls:
- *   1-6      Select algorithm      SPACE  Start / Pause
- *   R        Shuffle & reset       UP / DOWN  Speed
- */
+﻿/* * Controls:
+ *   1 – 6      Select algorithm        SPACE   Start / Pause
+ *   R          Shuffle & reset         UP / DOWN   Speed
+ *   A / D      Array size  ↓ / ↑
+*/
 
 #include "raylib.h"
 #include <vector>
@@ -37,13 +13,11 @@
 #include <cmath>
 #include <cstdio>
 
- // ════════════════════════════════════════════════════════
+ 
  //  Layout constants
- // ════════════════════════════════════════════════════════
 
 static const int SW = 1600;
 static const int SH = 900;
-static const int BAR_COUNT = 100;
 static const int BAR_GAP = 2;
 
 static const int HEADER_H = 70;
@@ -55,9 +29,13 @@ static const int BOT_PAD = 18;
 static const int BAR_AREA_Y = PANEL_H;
 static const int BAR_AREA_H = SH - PANEL_H - BOT_PAD;
 
-// ════════════════════════════════════════════════════════
+// Selectable array sizes  (A / D cycle through these)
+static const int SIZE_OPTIONS[] = { 25, 50, 75, 100, 150, 200 };
+static const int SIZE_COUNT = 6;
+
+
 //  Colour palette
-// ════════════════════════════════════════════════════════
+
 
 static const Color C_BG = { 10,  12,  20, 255 };
 static const Color C_HEADER = { 18,  20,  34, 255 };
@@ -69,7 +47,7 @@ static const Color C_ACCENT = { 99, 155, 255, 255 };
 static const Color C_BTN = { 32,  36,  58, 255 };
 static const Color C_CARD = { 26,  30,  50, 255 };
 
-// Bar gradient pairs  (lo = bottom colour, hi = top colour)
+// Bar gradient pairs  (lo = bottom, hi = top)
 static const Color C_BAR_LO = { 55, 100, 200, 255 };
 static const Color C_BAR_HI = { 90, 160, 255, 255 };
 static const Color C_CMP_LO = { 200, 150,  20, 255 };
@@ -79,9 +57,9 @@ static const Color C_SWP_HI = { 255,  90,  90, 255 };
 static const Color C_SRT_LO = { 30, 160,  80, 255 };
 static const Color C_SRT_HI = { 80, 230, 130, 255 };
 
-// ════════════════════════════════════════════════════════
+
 //  Algorithm metadata
-// ════════════════════════════════════════════════════════
+
 
 enum Algorithm {
     BUBBLE = 0,
@@ -107,9 +85,22 @@ static const char* ALGO_CMPLX[ALGO_COUNT] = {
     "O(n log n)", "O(n log n)", "O(n log n)"
 };
 
-// ════════════════════════════════════════════════════════
-//  Shared state
-// ════════════════════════════════════════════════════════
+
+//  Animation state
+
+
+struct AnimState {
+    // Shuffle wave — bars pop in left-to-right over ~0.7 s
+    bool               shuffleActive = false;
+    float              shuffleTimer = 0.f;   // 0 → 1 (wave progress)
+    std::vector<float> waveOffset;            // per-bar normalised delay
+
+    // Fanfare sweep — bright highlight sweeps left→right on completion
+    bool  fanfareActive = false;
+    float fanfarePos = 0.f;               // current bar index reached
+};
+
+//  Sort state
 
 struct SortState {
     std::vector<int> bars;
@@ -118,35 +109,22 @@ struct SortState {
     Algorithm  algo = BUBBLE;
     bool       running = false;
     bool       finished = false;
-    int        speed = 5;      // 1 (slow) … 10 (fast)
+    int        speed = 5;     // 1 (slow) … 10 (fast)
+    int        sizeIdx = 3;     // index into SIZE_OPTIONS  (default 100)
     long long  comparisons = 0;
     long long  swaps = 0;
 
     std::vector<std::function<void()>> steps;
     size_t stepIdx = 0;
+
+    int barCount() const { return SIZE_OPTIONS[sizeIdx]; }
 };
 
-// ════════════════════════════════════════════════════════
 //  Utility helpers
-// ════════════════════════════════════════════════════════
 
 static void resetColors(SortState& s)
 {
     std::fill(s.colorMap.begin(), s.colorMap.end(), 0);
-}
-
-static void shuffle(SortState& s)
-{
-    static std::mt19937 rng(std::random_device{}());
-    std::iota(s.bars.begin(), s.bars.end(), 1);
-    std::shuffle(s.bars.begin(), s.bars.end(), rng);
-    resetColors(s);
-    s.running = false;
-    s.finished = false;
-    s.comparisons = 0;
-    s.swaps = 0;
-    s.steps.clear();
-    s.stepIdx = 0;
 }
 
 // Linear colour interpolation
@@ -160,14 +138,41 @@ static Color lerpCol(Color a, Color b, float t)
     };
 }
 
-// ════════════════════════════════════════════════════════
-//  Sort builders — each pre-generates all steps as lambdas
-// ════════════════════════════════════════════════════════
+// Shuffle bars and kick off the wave pop-in animation
+static void shuffle(SortState& s, AnimState& anim)
+{
+    static std::mt19937 rng(std::random_device{}());
 
-// ── Bubble Sort ─────────────────────────────────────────
+    int n = s.barCount();
+    s.bars.assign(n, 0);
+    s.colorMap.assign(n, 0);
+
+    std::iota(s.bars.begin(), s.bars.end(), 1);
+    std::shuffle(s.bars.begin(), s.bars.end(), rng);
+
+    s.running = false;
+    s.finished = false;
+    s.comparisons = 0;
+    s.swaps = 0;
+    s.steps.clear();
+    s.stepIdx = 0;
+
+    // Stagger each bar's pop-in by its normalised position
+    anim.shuffleActive = true;
+    anim.shuffleTimer = 0.f;
+    anim.waveOffset.resize(n);
+    for (int i = 0; i < n; i++)
+        anim.waveOffset[i] = (float)i / n;
+
+    anim.fanfareActive = false;
+}
+
+//  Sort builders — each pre-generates all steps as lambdas
+
+// ── Bubble Sort ────────
 static void buildBubble(SortState& s)
 {
-    int n = (int)s.bars.size();
+    int n = s.barCount();
 
     for (int i = 0; i < n - 1; i++) {
         for (int j = 0; j < n - 1 - i; j++) {
@@ -184,7 +189,6 @@ static void buildBubble(SortState& s)
                     s.swaps++;
                 }
 
-                // Mark sorted tail
                 for (int k = n - i - 1; k < n; k++)
                     s.colorMap[k] = 3;
                 });
@@ -196,10 +200,10 @@ static void buildBubble(SortState& s)
         });
 }
 
-// ── Selection Sort ──────────────────────────────────────
+// ── Selection Sort ───────────────────
 static void buildSelection(SortState& s)
 {
-    int n = (int)s.bars.size();
+    int n = s.barCount();
 
     for (int i = 0; i < n - 1; i++) {
         s.steps.push_back([&s, i, n]() mutable {
@@ -231,10 +235,10 @@ static void buildSelection(SortState& s)
         });
 }
 
-// ── Insertion Sort ──────────────────────────────────────
+// ── Insertion Sort ───────────
 static void buildInsertion(SortState& s)
 {
-    int n = (int)s.bars.size();
+    int n = s.barCount();
 
     for (int i = 1; i < n; i++) {
         s.steps.push_back([&s, i]() {
@@ -261,10 +265,10 @@ static void buildInsertion(SortState& s)
         });
 }
 
-// ── Merge Sort (iterative, bottom-up) ───────────────────
+// ── Merge Sort (iterative, bottom-up) ──────
 static void buildMerge(SortState& s)
 {
-    int n = (int)s.bars.size();
+    int n = s.barCount();
 
     for (int w = 1; w < n; w *= 2) {
         for (int i = 0; i < n; i += 2 * w) {
@@ -275,8 +279,11 @@ static void buildMerge(SortState& s)
 
             s.steps.push_back([&s, l, m, r]() {
                 resetColors(s);
-                std::vector<int> tmp(s.bars.begin() + l,
-                    s.bars.begin() + r + 1);
+                std::vector<int> tmp(
+                    s.bars.begin() + l,
+                    s.bars.begin() + r + 1
+                );
+
                 int i2 = 0;
                 int j2 = m - l + 1;
                 int k = l;
@@ -304,10 +311,10 @@ static void buildMerge(SortState& s)
         });
 }
 
-// ── Quick Sort (iterative) ──────────────────────────────
+// ── Quick Sort (iterative) ─────────────
 static void buildQuick(SortState& s)
 {
-    int n = (int)s.bars.size();
+    int n = s.barCount();
 
     struct Range { int l, r; };
 
@@ -325,6 +332,7 @@ static void buildQuick(SortState& s)
 
         int pivot = arr[r];
         int i2 = l - 1;
+
         std::vector<int> snap = arr;
         int sL = l, sR = r;
 
@@ -369,7 +377,7 @@ static void buildQuick(SortState& s)
         });
 }
 
-// ── Heap Sort ───────────────────────────────────────────
+// ── Heap Sort ───────────────────────────────────
 static void heapify(
     std::vector<int>& arr,
     std::vector<std::function<void()>>& steps,
@@ -399,7 +407,7 @@ static void heapify(
 
 static void buildHeap(SortState& s)
 {
-    int n = (int)s.bars.size();
+    int n = s.barCount();
     std::vector<int> arr = s.bars;
 
     // Build max-heap
@@ -445,7 +453,7 @@ static void buildHeap(SortState& s)
         });
 }
 
-// ── Dispatcher ──────────────────────────────────────────
+// ── Dispatcher ─────────────────────
 static void buildSteps(SortState& s)
 {
     s.steps.clear();
@@ -465,20 +473,22 @@ static void buildSteps(SortState& s)
     }
 }
 
-// ════════════════════════════════════════════════════════
 //  Drawing helpers
-// ════════════════════════════════════════════════════════
 
-// Gradient bar: top is bright, bottom is dark; rounded bright cap on tip
+// Gradient bar with an optional vertical scale (for wave animation)
 static void drawGradBar(int x, int y, int w, int h,
-    Color lo, Color hi)
+    Color lo, Color hi, float scale = 1.f)
 {
     if (h <= 0) return;
-    DrawRectangleGradientV(x, y, w, h, hi, lo);
 
-    int capH = std::min(h, 5);
+    int dh = (int)(h * scale);   // scaled height
+    int dy = y + (h - dh);       // anchor to bottom
+
+    DrawRectangleGradientV(x, dy, w, dh, hi, lo);
+
+    int capH = std::min(dh, 5);
     DrawRectangleRounded(
-        { (float)x, (float)y, (float)w, (float)capH },
+        { (float)x, (float)dy, (float)w, (float)capH },
         0.5f, 4, hi
     );
 }
@@ -514,16 +524,14 @@ static void drawRoundBorder(float x, float y, float w, float h,
     DrawRectangleRoundedLines({ x, y, w, h }, radius, 8, c);
 }
 
-// ════════════════════════════════════════════════════════
-//  Bar area
-// ════════════════════════════════════════════════════════
+//  Bar area  (animation-aware)
 
-static void drawBars(const SortState& s)
+static void drawBars(const SortState& s, const AnimState& anim)
 {
-    int n = (int)s.bars.size();
+    int n = s.barCount();
     int bw = (SW - BAR_GAP * (n + 1)) / n;
 
-    // Subtle horizontal grid lines at 25 / 50 / 75 %
+    // Subtle grid lines at 25 / 50 / 75 %
     for (int pct = 25; pct < 100; pct += 25) {
         int gy = BAR_AREA_Y + (int)(BAR_AREA_H * (1.f - pct / 100.f));
         DrawLine(0, gy, SW, gy, { 30, 36, 60, 255 });
@@ -537,31 +545,49 @@ static void drawBars(const SortState& s)
         int   bx = BAR_GAP + i * (bw + BAR_GAP);
         int   by = BAR_AREA_Y + (BAR_AREA_H - bh);
 
-        Color lo, hi;
-        switch (s.colorMap[i]) {
-        case 1:
-            lo = C_CMP_LO; hi = C_CMP_HI;
-            drawGlow(bx, by, bw, bh, hi);
-            break;
-        case 2:
-            lo = C_SWP_LO; hi = C_SWP_HI;
-            drawGlow(bx, by, bw, bh, hi);
-            break;
-        case 3:
-            lo = C_SRT_LO; hi = C_SRT_HI;
-            break;
-        default:
-            lo = C_BAR_LO; hi = C_BAR_HI;
-            break;
+        // ── Wave scale: bar rises from 0 → full height on shuffle ──
+        float scale = 1.f;
+        if (anim.shuffleActive && i < (int)anim.waveOffset.size()) {
+            float local = (anim.shuffleTimer - anim.waveOffset[i]) * 3.f;
+            local = std::max(0.f, std::min(1.f, local));
+            // Ease-out cubic
+            float inv = 1.f - local;
+            scale = 1.f - inv * inv * inv;
         }
 
-        drawGradBar(bx, by, bw, bh, lo, hi);
+        // ── Fanfare: bright gold flash near the sweep front ─────────
+        Color lo, hi;
+        float fanDist = std::abs((float)i - anim.fanfarePos);
+
+        if (anim.fanfareActive && fanDist <= 4.f) {
+            float blend = 1.f - fanDist / 4.f;
+            lo = lerpCol(C_SRT_LO, { 255, 255, 180, 255 }, blend);
+            hi = lerpCol(C_SRT_HI, { 255, 255, 220, 255 }, blend);
+        }
+        else {
+            switch (s.colorMap[i]) {
+            case 1:
+                lo = C_CMP_LO; hi = C_CMP_HI;
+                drawGlow(bx, by, bw, bh, hi);
+                break;
+            case 2:
+                lo = C_SWP_LO; hi = C_SWP_HI;
+                drawGlow(bx, by, bw, bh, hi);
+                break;
+            case 3:
+                lo = C_SRT_LO; hi = C_SRT_HI;
+                break;
+            default:
+                lo = C_BAR_LO; hi = C_BAR_HI;
+                break;
+            }
+        }
+
+        drawGradBar(bx, by, bw, bh, lo, hi, scale);
     }
 }
 
-// ════════════════════════════════════════════════════════
-//  UI panels
-// ════════════════════════════════════════════════════════
+//  UI panels  (each row is its own function)
 
 static void drawHeader(const SortState& s)
 {
@@ -569,7 +595,21 @@ static void drawHeader(const SortState& s)
     DrawLine(0, HEADER_H, SW, HEADER_H, C_DIVIDER);
 
     // Title
-    DrawText("SORTING VISUALIZER", 28, 20, 28, C_TEXT);
+    DrawText("SORTING VISUALIZER", 28, 12, 26, C_TEXT);
+
+    // Keyboard hints — two compact lines directly under the title
+    DrawText(
+        "SPACE  Start/Pause     R  Shuffle     UP/DOWN  Speed",
+        28, 42, 12, C_SUBTEXT
+    );
+    DrawText(
+        "1-6  Algorithm     A/D  Array Size",
+        28, 56, 12, C_SUBTEXT
+    );
+
+    // FPS counter (centred)
+    DrawText(TextFormat("FPS: %d", GetFPS()),
+        SW / 2 - 30, 12, 16, C_SUBTEXT);
 
     // Complexity badge
     const char* cx = ALGO_CMPLX[s.algo];
@@ -608,7 +648,8 @@ static void drawButtonRow(const SortState& s)
     const int btnW = 158;
     const int btnH = 40;
     const int btnGap = 10;
-    const int startX = (SW - (ALGO_COUNT * btnW + (ALGO_COUNT - 1) * btnGap)) / 2;
+    const int startX =
+        (SW - (ALGO_COUNT * btnW + (ALGO_COUNT - 1) * btnGap)) / 2;
 
     for (int i = 0; i < ALGO_COUNT; i++) {
         int  bx = startX + i * (btnW + btnGap);
@@ -644,11 +685,11 @@ static void drawStatsRow(const SortState& s)
     DrawRectangle(0, sY, SW, STATS_H, C_PANEL);
     DrawLine(0, sY + STATS_H, SW, sY + STATS_H, C_DIVIDER);
 
-    // ── Stat cards ───────────────────────────────────────
-    const int cW = 190;
+    // ── Stat cards ────────────────────────────
+    const int cW = 160;
     const int cH = 50;
-    const int cGap = 10;
-    const int cX = 18;
+    const int cGap = 8;
+    const int cX = 14;
     const int cY = sY + 7;
 
     char buf[64];
@@ -666,14 +707,14 @@ static void drawStatsRow(const SortState& s)
     drawCard(cX + 2 * (cW + cGap), cY, cW, cH,
         "Steps", buf, C_ACCENT);
 
-    snprintf(buf, sizeof(buf), "%d", BAR_COUNT);
+    snprintf(buf, sizeof(buf), "%d", s.barCount());
     drawCard(cX + 3 * (cW + cGap), cY, cW, cH,
-        "Elements", buf, C_SRT_HI);
+        "Elements [A/D]", buf, C_SRT_HI);
 
-    // ── Progress bar ─────────────────────────────────────
+    // ── Progress bar ───────────────
     int   pbX = cX + 4 * (cW + cGap) + 8;
     int   pbY = sY + 10;
-    int   pbW = 260;
+    int   pbW = 240;
     int   pbH = 10;
     float prog = s.steps.empty()
         ? 0.f
@@ -691,9 +732,9 @@ static void drawStatsRow(const SortState& s)
     }
     DrawText("Progress", pbX, sY + 26, 12, C_SUBTEXT);
 
-    // ── Speed bar ────────────────────────────────────────
-    int spX = SW - 290;
-    int spY = sY + 8;
+    // ── Speed bar ─────
+    int   spX = SW - 290;
+    int   spY = sY + 8;
     DrawText("Speed", spX, spY, 13, C_SUBTEXT);
 
     int   sBX = spX + 58;
@@ -716,12 +757,6 @@ static void drawStatsRow(const SortState& s)
     DrawText(TextFormat("%d", s.speed),
         sBX + sBW + 8, spY, 18, C_TEXT);
 
-    // ── Keyboard hints ───────────────────────────────────
-    DrawText(
-        "[SPACE] Start/Pause   [R] Shuffle"
-        "   [UP/DOWN] Speed   [1-6] Algorithm",
-        16, sY + 44, 13, C_SUBTEXT
-    );
 }
 
 static void drawLegend()
@@ -760,38 +795,39 @@ static void drawUI(const SortState& s)
     drawLegend();
 }
 
-// ════════════════════════════════════════════════════════
 //  Main
-// ════════════════════════════════════════════════════════
 
 int main()
 {
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_HIGHDPI);
-    InitWindow(SW, SH, "Sorting Visualizer — Day 5");
+    InitWindow(SW, SH, "Sorting Visualizer — Final");
     SetTargetFPS(60);
 
     SortState s;
-    s.bars.resize(BAR_COUNT);
-    s.colorMap.resize(BAR_COUNT, 0);
-    shuffle(s);
+    AnimState anim;
+    s.bars.assign(SIZE_OPTIONS[s.sizeIdx], 0);
+    s.colorMap.assign(SIZE_OPTIONS[s.sizeIdx], 0);
+    shuffle(s, anim);
 
     while (!WindowShouldClose())
     {
-        // ── Input ────────────────────────────────────────
+        float dt = GetFrameTime();
+
+        // ── Input ─────────
         for (int i = 0; i < ALGO_COUNT; i++) {
             if (IsKeyPressed(KEY_ONE + i)) {
                 s.algo = (Algorithm)i;
-                shuffle(s);
+                shuffle(s, anim);
             }
         }
 
         if (IsKeyPressed(KEY_R)) {
-            shuffle(s);
+            shuffle(s, anim);
         }
 
         if (IsKeyPressed(KEY_SPACE)) {
             if (s.finished) {
-                shuffle(s);
+                shuffle(s, anim);
             }
             else {
                 if (!s.running && s.steps.empty())
@@ -805,7 +841,32 @@ int main()
         if (IsKeyPressed(KEY_DOWN))
             s.speed = std::max(1, s.speed - 1);
 
-        // ── Advance sort steps ───────────────────────────
+        // Array size  (only while not sorting)
+        if (IsKeyPressed(KEY_D) && s.sizeIdx < SIZE_COUNT - 1
+            && !s.running) {
+            s.sizeIdx++;
+            shuffle(s, anim);
+        }
+        if (IsKeyPressed(KEY_A) && s.sizeIdx > 0
+            && !s.running) {
+            s.sizeIdx--;
+            shuffle(s, anim);
+        }
+
+        // ── Update animations ───────────
+        if (anim.shuffleActive) {
+            anim.shuffleTimer += dt * 1.4f;   // full wave in ~0.7 s
+            if (anim.shuffleTimer >= 1.f)
+                anim.shuffleActive = false;
+        }
+
+        if (anim.fanfareActive) {
+            anim.fanfarePos += dt * s.barCount() * 2.5f;
+            if (anim.fanfarePos > s.barCount() + 6)
+                anim.fanfareActive = false;
+        }
+
+        // ── Advance sort steps ─────────────
         if (s.running && !s.finished) {
             int spf = (int)std::round(
                 std::pow(2.8f, (s.speed - 1) / 3.0f)
@@ -817,13 +878,17 @@ int main()
                 s.running = false;
                 s.finished = true;
                 for (auto& c : s.colorMap) c = 3;
+
+                // Kick off fanfare sweep
+                anim.fanfareActive = true;
+                anim.fanfarePos = 0.f;
             }
         }
 
-        // ── Draw ─────────────────────────────────────────
+        // ── Draw ──────────────
         BeginDrawing();
         ClearBackground(C_BG);
-        drawBars(s);
+        drawBars(s, anim);
         drawUI(s);
         EndDrawing();
     }
